@@ -2,11 +2,10 @@ from flask import Flask, request, jsonify
 import re
 import os
 import PlayFab
-import coin  # Mengimpor file coin.py Anda untuk menggunakan fungsi login()
 
 app = Flask(__name__)
 
-# Fungsi membaca list.txt (Database lokal Anda)
+# Fungsi membaca list.txt (Database lokal)
 def load_addons():
     addons = []
     if not os.path.exists('list.txt'):
@@ -47,7 +46,7 @@ def index():
 
             <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl mb-8">
                 <div class="flex flex-col sm:flex-row gap-3">
-                    <input type="text" id="search-input" placeholder="Ketik nama addon (misal: Furniture, Animals) atau paste UUID..." 
+                    <input type="text" id="search-input" placeholder="Ketik nama addon atau paste UUID..." 
                            class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:outline-none focus:border-green-500 text-white transition">
                     <button onclick="performSearch()" class="px-8 py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition shadow-lg shadow-green-900/30">
                         Cari Mod
@@ -94,13 +93,13 @@ def index():
                         card.className = "bg-gray-900 p-5 rounded-xl border border-gray-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-gray-700 transition shadow-md";
                         card.innerHTML = `
                             <div>
-                                <h3 class="text-lg font-bold text-white">${item.name}</h3>
+                                <h3 class="text-lg font-bold text-white">\${item.name}</h3>
                                 <div class="flex flex-wrap gap-2 mt-2">
-                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">${item.type}</span>
-                                    <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">${item.uuid}</span>
+                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">\${item.type}</span>
+                                    <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">\${item.uuid}</span>
                                 </div>
                             </div>
-                            <button onclick="downloadItem('${item.uuid}', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
+                            <button onclick="downloadItem('\${item.uuid}', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
                                 Unduh Pack
                             </button>
                         `;
@@ -119,7 +118,7 @@ def index():
                 button.className = "w-full sm:w-auto px-5 py-2.5 bg-gray-800 text-gray-500 rounded-lg font-bold text-sm cursor-not-allowed";
 
                 try {
-                    const response = await fetch(`/api/download/${uuid}`, { method: 'POST' });
+                    const response = await fetch(`/api/download/\${uuid}`, { method: 'POST' });
                     const data = await response.json();
 
                     if (data.success && data.download_url) {
@@ -132,11 +131,11 @@ def index():
                         button.innerText = "Sukses!";
                         button.className = "w-full sm:w-auto px-5 py-2.5 bg-green-600 text-white rounded-lg font-bold text-sm";
                     } else {
-                        alert("Gagal memproses PlayFab: " + (data.error || "Token expired"));
+                        alert("Gagal memproses: " + (data.error || "Token PlayFab expired"));
                         resetButton();
                     }
                 } catch (error) {
-                    alert("Koneksi bermasalah atau proses Vercel timeout.");
+                    alert("Koneksi bermasalah.");
                     resetButton();
                 }
 
@@ -156,29 +155,21 @@ def index():
 def search():
     query = request.args.get('q', '').lower()
     addons = load_addons()
-    
-    # Filter list berdasarkan nama atau uuid yang dicari user
     results = [
         a for a in addons 
         if query in a['name'].lower() or query in a['uuid'].lower()
     ]
     return jsonify(results)
 
-# 3. API RETRIEVE PLAYFAB (Berjalan saat tombol "Unduh Pack" diklik)
+# 3. API RETRIEVE LINK PLAYFAB
 @app.route('/api/download/<uuid_code>', methods=['POST'])
 def download_addon(uuid_code):
     try:
-        # Jalankan fungsi login bawaan dari skrip coin.py Anda di latar belakang Vercel
-        if hasattr(coin, 'login'):
-            login_success = coin.login()
-            if not login_success:
-                return jsonify({"error": "Gagal melakukan autentikasi ke server PlayFab"}), 401
-
-        # Ambil data item menggunakan fungsi PlayFab.py Anda
+        # Panggil fungsi pencarian internal PlayFab langsung dari file PlayFab.py Anda
         playfab_results = PlayFab.main([uuid_code])
         
         if not playfab_results or uuid_code not in playfab_results:
-            return jsonify({"error": "Item tidak ditemukan di server PlayFab"}), 404
+            return jsonify({"error": "Item tidak ditemukan di PlayFab"}), 404
             
         item_data = playfab_results[uuid_code]
         
@@ -187,7 +178,7 @@ def download_addon(uuid_code):
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "URL unduhan kosong untuk item ini"}), 404
+            return jsonify({"error": "URL unduhan kosong"}), 404
 
         return jsonify({
             "success": True, 
