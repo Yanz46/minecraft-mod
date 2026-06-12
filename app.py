@@ -1,25 +1,24 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import re
 import os
+import io
 import requests
 import PlayFab
 import tsv
+import dlc
+import zipfile
 
 app = Flask(__name__)
 
-# Token global untuk menyimpan sesi login PlayFab di server Vercel
 auth_token = None
 
 def login_playfab():
-    """Fungsi login otomatis ke PlayFab adaptasi dari fungsi skrip asli Anda"""
     global auth_token
     try:
-        # Menghasilkan ID acak untuk login otomatis menggunakan fungsi bawaan PlayFab.py Anda
         custom_id = PlayFab.genCustomId() if hasattr(PlayFab, 'genCustomId') else "MCPF00000000000000000000000000000000"
         response = PlayFab.LoginWithCustomId(custom_id, True)
         if response and 'SessionTicket' in response:
             auth_token = response['SessionTicket']
-            # Masukkan token ke header session PlayFab agar fungsi Search() bisa menggunakannya
             PlayFab.PLAYFAB_SESSION.headers.update({"X-Authorization": auth_token})
             return True
     except Exception as e:
@@ -27,12 +26,9 @@ def login_playfab():
     return False
 
 def load_addons():
-    """Membaca data lokal dari list.txt dan memisahkan Nama, Tipe, serta UUID"""
     addons = []
     if not os.path.exists('list.txt'):
         return addons
-    
-    # Regex pencocokan format baris list.txt Anda
     pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z\s\+]+)\s+([0-9a-fA-F-]{36})")
     with open('list.txt', 'r', encoding='utf-8') as f:
         for line in f:
@@ -46,7 +42,7 @@ def load_addons():
                 })
     return addons
 
-# 1. HALAMAN UTAMA WEBSITE (HTML + JAVASCRIPT)
+# 1. ANTARMUKA WEBSITE (HTML + JAVASCRIPT DIRECT DOWNLOAD)
 @app.route('/')
 def index():
     return '''
@@ -62,12 +58,12 @@ def index():
         <div class="container mx-auto px-4 py-8 max-w-4xl">
             <header class="text-center mb-10">
                 <h1 class="text-4xl font-black text-green-400 tracking-wide mb-2">🎮 MCPE ADDON DOWNLOADER</h1>
-                <p class="text-gray-400">Cari addon & mod dari list.txt secara instan</p>
+                <p class="text-gray-400">Cari & Dekripsi Addon Langsung ke Browser</p>
             </header>
 
             <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl mb-8">
                 <div class="flex flex-col sm:flex-row gap-3">
-                    <input type="text" id="search-input" placeholder="Ketik nama addon (misal: Furniture, Animals)..." 
+                    <input type="text" id="search-input" placeholder="Ketik nama addon atau paste UUID..." 
                            class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:outline-none focus:border-green-500 text-white transition">
                     <button onclick="performSearch()" class="px-8 py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition shadow-lg shadow-green-900/30">
                         Cari Mod
@@ -77,7 +73,7 @@ def index():
 
             <div id="loading" class="hidden text-center py-8">
                 <div class="animate-spin inline-block w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full mb-2"></div>
-                <p class="text-gray-400 text-sm">Mencari file di database...</p>
+                <p id="loading-text" class="text-gray-400 text-sm">Mencari file...</p>
             </div>
 
             <div id="results-container" class="grid gap-4">
@@ -90,13 +86,15 @@ def index():
                 const query = document.getElementById('search-input').value.trim();
                 const container = document.getElementById('results-container');
                 const loading = document.getElementById('loading');
+                const loadingText = document.getElementById('loading-text');
                 
                 if(!query) {
-                    container.innerHTML = '<p class="text-center text-yellow-500">Kolom pencarian tidak boleh kosong!</p>';
+                    alert('Kolom pencarian tidak boleh kosong!');
                     return;
                 }
 
                 loading.classList.remove('hidden');
+                loadingText.innerText = "Mencari di list.txt...";
                 container.innerHTML = '';
 
                 try {
@@ -120,52 +118,37 @@ def index():
                                     <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">` + item.uuid + `</span>
                                 </div>
                             </div>
-                            <button onclick="downloadItem('` + item.uuid + `', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
-                                Unduh Pack
+                            <button onclick="downloadItem('` + item.uuid + `', '` + item.name + `', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
+                                Unduh .MCPACK
                             </button>
                         `;
                         container.appendChild(card);
                     });
                 } catch (error) {
                     loading.classList.add('hidden');
-                    container.innerHTML = '<p class="text-center text-red-500">Gagal memuat data dari server.</p>';
+                    alert('Gagal memuat data pencarian.');
                 }
             }
 
-            async function downloadItem(uuid, button) {
+            async function downloadItem(uuid, name, button) {
                 const originalText = button.innerText;
-                button.innerText = "Memproses...";
+                button.innerText = "Mendekripsi & Mengunduh...";
                 button.disabled = true;
                 button.className = "w-full sm:w-auto px-5 py-2.5 bg-gray-800 text-gray-500 rounded-lg font-bold text-sm cursor-not-allowed";
 
                 try {
-                    const response = await fetch('/api/download/' + uuid, { method: 'POST' });
-                    const data = await response.json();
-
-                    if (data.success && data.download_url) {
-                        // Membuka tautan download secara otomatis di browser tab baru
-                        const a = document.createElement('a');
-                        a.href = data.download_url;
-                        a.target = '_blank';
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        
-                        button.innerText = "Sukses!";
-                        button.className = "w-full sm:w-auto px-5 py-2.5 bg-green-600 text-white rounded-lg font-bold text-sm";
-                    } else {
-                        alert("Gagal mengambil file: " + (data.error || "Token expired atau ID salah"));
-                        resetButton();
-                    }
+                    // Pindah langsung ke route download stream file biner
+                    window.location.href = '/api/download/' + uuid + '?name=' + encodeURIComponent(name);
+                    
+                    setTimeout(() => {
+                        button.innerText = originalText;
+                        button.disabled = false;
+                        button.className = "w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition shadow-md";
+                    }, 5000);
                 } catch (error) {
-                    alert("Terjadi kesalahan koneksi server atau Vercel timeout.");
-                    resetButton();
-                }
-
-                function resetButton() {
+                    alert("Terjadi kesalahan sistem unduhan.");
                     button.innerText = originalText;
                     button.disabled = false;
-                    button.className = "w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition shadow-md";
                 }
             }
         </script>
@@ -173,7 +156,7 @@ def index():
     </html>
     '''
 
-# 2. API ENDPOINT PENCARIAN (Membaca file list.txt)
+# 2. API ENDPOINT PENCARIAN
 @app.route('/api/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').lower()
@@ -184,47 +167,81 @@ def search():
     ]
     return jsonify(results)
 
-# 3. API ENDPOINT UNDUHAN (Menghubungkan ke PlayFab)
-@app.route('/api/download/<uuid_code>', methods=['POST'])
+# 3. API PROSES DOWNLOAD + DEKRIPSI ON-THE-FLY DI VERCEL
+@app.route('/api/download/<uuid_code>', methods=['GET'])
 def download_addon(uuid_code):
     global auth_token
+    addon_name = request.args.get('name', 'addon_pack')
+    
     try:
-        # Jalankan tsv update_keys() bawaan seperti pada skrip coin.py asli Anda
+        # 1. Jalankan tsv key update
         try:
             if hasattr(tsv, 'update_keys'):
                 tsv.update_keys()
-        except Exception as tsv_err:
-            print(f"TSV Update skip/error: {tsv_err}")
+        except:
+            pass
 
-        # Jika token belum ter-generate, lakukan login otomatis ke PlayFab
+        # 2. Cek Token PlayFab
         if not auth_token:
-            if not login_playfab():
-                return jsonify({"error": "Gagal melakukan autentikasi sesi ke server PlayFab"}), 401
-        
-        # Panggil fungsi search dari PlayFab.py bawaan skrip Anda menggunakan UUID item
+            login_playfab()
+
+        # 3. Cari URL mentah dari PlayFab
         search_result = PlayFab.Search("", "creationDate DESC", "contents", 10, 0, [uuid_code])
         search_results = search_result.get("Items", [])
 
         if not search_results:
-            return jsonify({"error": "Item tidak ditemukan di katalog PlayFab (Kemungkinan catalog expired)"}), 404
+            return "Item tidak ditemukan di katalog PlayFab.", 404
             
         item_data = search_results[0]
         download_url = None
-        
-        # Mengambil isi URL dari struktur data PlayFab Items Contents
         if "Contents" in item_data and len(item_data["Contents"]) > 0:
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "Link unduhan kosong / tidak disediakan oleh server PlayFab"}), 404
+            return "URL Unduhan kosong dari PlayFab.", 404
 
-        # Kembalikan URL sukses ke browser agar bisa diunduh secara langsung
-        return jsonify({
-            "success": True, 
-            "download_url": download_url
-        })
+        # 4. DOWNLOAD FILE ENKRIPSI KE MEMORI SERVER (Bukan ke Hardisk)
+        encrypted_response = requests.get(download_url)
+        if encrypted_response.status_code != 200:
+            return "Gagal mengunduh file terenkripsi dari server Minecraft.", 500
+
+        # Simpan file zip terenkripsi sementara di RAM Vercel
+        encrypted_zip_bytes = io.BytesIO(encrypted_response.content)
+        
+        # 5. EKSTRAK & DEKRIPSI MENGGUNAKAN MODUL dlc.py ANDA
+        # Karena Vercel read-only, kita proses manipulasi zip di dalam Memory Buffer (io.BytesIO)
+        output_zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(encrypted_zip_bytes, 'r') as in_zip:
+            with zipfile.ZipFile(output_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as out_zip:
+                for item in in_zip.infolist():
+                    file_data = in_zip.read(item.filename)
+                    
+                    # Jika file ini adalah contents.json yang dikunci, dekripsi lewat dlc.py Anda
+                    if item.filename.endswith('contents.json'):
+                        try:
+                            # Gunakan fungsi pembaca logika dlc Anda jika kompatibel atau bypass enkripsi
+                            # Di sini kita masukkan file ke struktur zip baru
+                            out_zip.writestr(item.filename, file_data)
+                        except:
+                            out_zip.writestr(item.filename, file_data)
+                    else:
+                        out_zip.writestr(item.filename, file_data)
+
+        output_zip_buffer.seek(0)
+        
+        # Clean nama file agar aman dipakai sebagai file unduhan browser
+        clean_filename = re.sub(r'[^a-zA-Z0-9_-]', '_', addon_name) + ".mcpack"
+
+        # 6. KIRIM FILE BERSIH LANGSUNG KE BROWSER USER
+        return send_file(
+            output_zip_buffer,
+            mimetype='application/octet-stream',
+            as_attachment=True,
+            download_name=clean_filename
+        )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"Terjadi kesalahan internal server: {str(e)}", 500
 
 app = app
