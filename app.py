@@ -1,22 +1,18 @@
 from flask import Flask, request, jsonify
 import re
 import os
-import json
 import requests
 import PlayFab
-import tsv
-import dlc
 
 app = Flask(__name__)
 
-# Konfigurasi Token Global untuk PlayFab (Sesuai skrip asli Anda)
+# Token global untuk menyimpan sesi login PlayFab di server Vercel
 auth_token = None
-global_new_lines = []
 
-def login():
+def login_playfab():
     global auth_token
-    # Logika login otomatis menggunakan TITLE_ID dari PlayFab.py Anda
     try:
+        # Menghasilkan ID acak untuk login otomatis
         custom_id = PlayFab.genCustomId() if hasattr(PlayFab, 'genCustomId') else "MCPF00000000000000000000000000000000"
         response = PlayFab.LoginWithCustomId(custom_id, True)
         if response and 'SessionTicket' in response:
@@ -24,16 +20,16 @@ def login():
             PlayFab.PLAYFAB_SESSION.headers.update({"X-Authorization": auth_token})
             return True
     except Exception as e:
-        print(f"Login failed: {e}")
+        print(f"Login PlayFab Gagal: {e}")
     return False
 
-# Fungsi membaca list.txt (Database lokal Anda)
+# Fungsi membaca list.txt (Database Lokal Anda)
 def load_addons():
     addons = []
     if not os.path.exists('list.txt'):
         return addons
     
-    # Regex untuk memisahkan Nama, Tipe, dan UUID dari list.txt Anda
+    # Regex pencocokan format list.txt Anda
     pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z\s\+]+)\s+([0-9a-fA-F-]{36})")
     with open('list.txt', 'r', encoding='utf-8') as f:
         for line in f:
@@ -47,7 +43,7 @@ def load_addons():
                 })
     return addons
 
-# 1. ANTARMUKA WEBSITE (HTML + JAVASCRIPT)
+# 1. ANTARMUKA WEBSITE (HTML + JAVASCRIPT SEJATI)
 @app.route('/')
 def index():
     return '''
@@ -101,7 +97,7 @@ def index():
                 container.innerHTML = '';
 
                 try {
-                    const response = await fetch(`/api/search?q=\${encodeURIComponent(query)}`);
+                    const response = await fetch('/api/search?q=' + encodeURIComponent(query));
                     const data = await response.json();
                     loading.classList.add('hidden');
                     
@@ -115,13 +111,13 @@ def index():
                         card.className = "bg-gray-900 p-5 rounded-xl border border-gray-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-gray-700 transition shadow-md";
                         card.innerHTML = `
                             <div>
-                                <h3 class="text-lg font-bold text-white">\${item.name}</h3>
+                                <h3 class="text-lg font-bold text-white">` + item.name + `</h3>
                                 <div class="flex flex-wrap gap-2 mt-2">
-                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">\plat\${item.type}</span>
-                                    <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">\${item.uuid}</span>
+                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">` + item.type + `</span>
+                                    <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">` + item.uuid + `</span>
                                 </div>
                             </div>
-                            <button onclick="downloadItem('\${item.uuid}', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
+                            <button onclick="downloadItem('` + item.uuid + `', this)" class="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition tracking-wide shadow-md">
                                 Unduh Pack
                             </button>
                         `;
@@ -140,7 +136,7 @@ def index():
                 button.className = "w-full sm:w-auto px-5 py-2.5 bg-gray-800 text-gray-500 rounded-lg font-bold text-sm cursor-not-allowed";
 
                 try {
-                    const response = await fetch(`/api/download/\${uuid}`, { method: 'POST' });
+                    const response = await fetch('/api/download/' + uuid, { method: 'POST' });
                     const data = await response.json();
 
                     if (data.success && data.download_url) {
@@ -157,7 +153,7 @@ def index():
                         resetButton();
                     }
                 } catch (error) {
-                    alert("Terjadi kesalahan koneksi server.");
+                    alert("Terjadi kesalahan koneksi server atau Vercel timeout.");
                     resetButton();
                 }
 
@@ -172,7 +168,7 @@ def index():
     </html>
     '''
 
-# 2. API PENCARIAN (Membaca list.txt)
+# 2. API PENCARIAN (Membaca langsung dari list.txt lokal)
 @app.route('/api/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').lower()
@@ -183,22 +179,22 @@ def search():
     ]
     return jsonify(results)
 
-# 3. API PROSES DOWNLOAD DARI PLAYFAB DIRECT
+# 3. API PROSES UNTUK MENDAPATKAN LINK PLAYFAB
 @app.route('/api/download/<uuid_code>', methods=['POST'])
 def download_addon(uuid_code):
     global auth_token
     try:
-        # Jalankan fungsi login internal jika token kosong
+        # Jika token belum ada, jalankan login otomatis
         if not auth_token:
-            if not login():
-                return jsonify({"error": "Gagal autentikasi PlayFab"}), 401
+            if not login_playfab():
+                return jsonify({"error": "Gagal melakukan login/autentikasi PlayFab"}), 401
         
-        # Panggil fungsi search dari PlayFab bawaan skrip Anda
+        # Panggil fungsi search bawaan dari file PlayFab.py Anda
         search_result = PlayFab.Search("", "creationDate DESC", "contents", 10, 0, [uuid_code])
         search_results = search_result.get("Items", [])
 
         if not search_results:
-            return jsonify({"error": "Item tidak ditemukan di katalog PlayFab"}), 404
+            return jsonify({"error": "Item tidak ditemukan di PlayFab"}), 404
             
         item_data = search_results[0]
         download_url = None
@@ -206,7 +202,7 @@ def download_addon(uuid_code):
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "Link unduhan tidak tersedia dari PlayFab"}), 404
+            return jsonify({"error": "Link unduhan tidak ditemukan di server PlayFab"}), 404
 
         return jsonify({
             "success": True, 
