@@ -3,6 +3,7 @@ import re
 import os
 import requests
 import PlayFab
+import tsv
 
 app = Flask(__name__)
 
@@ -10,26 +11,28 @@ app = Flask(__name__)
 auth_token = None
 
 def login_playfab():
+    """Fungsi login otomatis ke PlayFab adaptasi dari fungsi skrip asli Anda"""
     global auth_token
     try:
-        # Menghasilkan ID acak untuk login otomatis
+        # Menghasilkan ID acak untuk login otomatis menggunakan fungsi bawaan PlayFab.py Anda
         custom_id = PlayFab.genCustomId() if hasattr(PlayFab, 'genCustomId') else "MCPF00000000000000000000000000000000"
         response = PlayFab.LoginWithCustomId(custom_id, True)
         if response and 'SessionTicket' in response:
             auth_token = response['SessionTicket']
+            # Masukkan token ke header session PlayFab agar fungsi Search() bisa menggunakannya
             PlayFab.PLAYFAB_SESSION.headers.update({"X-Authorization": auth_token})
             return True
     except Exception as e:
         print(f"Login PlayFab Gagal: {e}")
     return False
 
-# Fungsi membaca list.txt (Database Lokal Anda)
 def load_addons():
+    """Membaca data lokal dari list.txt dan memisahkan Nama, Tipe, serta UUID"""
     addons = []
     if not os.path.exists('list.txt'):
         return addons
     
-    # Regex pencocokan format list.txt Anda
+    # Regex pencocokan format baris list.txt Anda
     pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z\s\+]+)\s+([0-9a-fA-F-]{36})")
     with open('list.txt', 'r', encoding='utf-8') as f:
         for line in f:
@@ -43,7 +46,7 @@ def load_addons():
                 })
     return addons
 
-# 1. ANTARMUKA WEBSITE (HTML + JAVASCRIPT SEJATI)
+# 1. HALAMAN UTAMA WEBSITE (HTML + JAVASCRIPT)
 @app.route('/')
 def index():
     return '''
@@ -52,7 +55,7 @@ def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>MCPE Addon Downloader</title>
+        <title>MCPE Addon Downloader Dashboard</title>
         <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     </head>
     <body class="bg-gray-950 text-gray-100 min-h-screen font-sans">
@@ -140,8 +143,10 @@ def index():
                     const data = await response.json();
 
                     if (data.success && data.download_url) {
+                        // Membuka tautan download secara otomatis di browser tab baru
                         const a = document.createElement('a');
                         a.href = data.download_url;
+                        a.target = '_blank';
                         document.body.appendChild(a);
                         a.click();
                         a.remove();
@@ -149,7 +154,7 @@ def index():
                         button.innerText = "Sukses!";
                         button.className = "w-full sm:w-auto px-5 py-2.5 bg-green-600 text-white rounded-lg font-bold text-sm";
                     } else {
-                        alert("Gagal mengambil file: " + (data.error || "Token expired"));
+                        alert("Gagal mengambil file: " + (data.error || "Token expired atau ID salah"));
                         resetButton();
                     }
                 } catch (error) {
@@ -168,7 +173,7 @@ def index():
     </html>
     '''
 
-# 2. API PENCARIAN (Membaca langsung dari list.txt lokal)
+# 2. API ENDPOINT PENCARIAN (Membaca file list.txt)
 @app.route('/api/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').lower()
@@ -179,31 +184,41 @@ def search():
     ]
     return jsonify(results)
 
-# 3. API PROSES UNTUK MENDAPATKAN LINK PLAYFAB
+# 3. API ENDPOINT UNDUHAN (Menghubungkan ke PlayFab)
 @app.route('/api/download/<uuid_code>', methods=['POST'])
 def download_addon(uuid_code):
     global auth_token
     try:
-        # Jika token belum ada, jalankan login otomatis
+        # Jalankan tsv update_keys() bawaan seperti pada skrip coin.py asli Anda
+        try:
+            if hasattr(tsv, 'update_keys'):
+                tsv.update_keys()
+        except Exception as tsv_err:
+            print(f"TSV Update skip/error: {tsv_err}")
+
+        # Jika token belum ter-generate, lakukan login otomatis ke PlayFab
         if not auth_token:
             if not login_playfab():
-                return jsonify({"error": "Gagal melakukan login/autentikasi PlayFab"}), 401
+                return jsonify({"error": "Gagal melakukan autentikasi sesi ke server PlayFab"}), 401
         
-        # Panggil fungsi search bawaan dari file PlayFab.py Anda
+        # Panggil fungsi search dari PlayFab.py bawaan skrip Anda menggunakan UUID item
         search_result = PlayFab.Search("", "creationDate DESC", "contents", 10, 0, [uuid_code])
         search_results = search_result.get("Items", [])
 
         if not search_results:
-            return jsonify({"error": "Item tidak ditemukan di PlayFab"}), 404
+            return jsonify({"error": "Item tidak ditemukan di katalog PlayFab (Kemungkinan catalog expired)"}), 404
             
         item_data = search_results[0]
         download_url = None
+        
+        # Mengambil isi URL dari struktur data PlayFab Items Contents
         if "Contents" in item_data and len(item_data["Contents"]) > 0:
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "Link unduhan tidak ditemukan di server PlayFab"}), 404
+            return jsonify({"error": "Link unduhan kosong / tidak disediakan oleh server PlayFab"}), 404
 
+        # Kembalikan URL sukses ke browser agar bisa diunduh secara langsung
         return jsonify({
             "success": True, 
             "download_url": download_url
