@@ -1,17 +1,39 @@
 from flask import Flask, request, jsonify
 import re
 import os
+import json
+import requests
 import PlayFab
+import tsv
+import dlc
 
 app = Flask(__name__)
 
-# Fungsi membaca list.txt (Database lokal)
+# Konfigurasi Token Global untuk PlayFab (Sesuai skrip asli Anda)
+auth_token = None
+global_new_lines = []
+
+def login():
+    global auth_token
+    # Logika login otomatis menggunakan TITLE_ID dari PlayFab.py Anda
+    try:
+        custom_id = PlayFab.genCustomId() if hasattr(PlayFab, 'genCustomId') else "MCPF00000000000000000000000000000000"
+        response = PlayFab.LoginWithCustomId(custom_id, True)
+        if response and 'SessionTicket' in response:
+            auth_token = response['SessionTicket']
+            PlayFab.PLAYFAB_SESSION.headers.update({"X-Authorization": auth_token})
+            return True
+    except Exception as e:
+        print(f"Login failed: {e}")
+    return False
+
+# Fungsi membaca list.txt (Database lokal Anda)
 def load_addons():
     addons = []
     if not os.path.exists('list.txt'):
         return addons
     
-    # Regex untuk memisahkan Nama, Tipe, dan UUID dari list.txt
+    # Regex untuk memisahkan Nama, Tipe, dan UUID dari list.txt Anda
     pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z\s\+]+)\s+([0-9a-fA-F-]{36})")
     with open('list.txt', 'r', encoding='utf-8') as f:
         for line in f:
@@ -46,7 +68,7 @@ def index():
 
             <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl mb-8">
                 <div class="flex flex-col sm:flex-row gap-3">
-                    <input type="text" id="search-input" placeholder="Ketik nama addon atau paste UUID..." 
+                    <input type="text" id="search-input" placeholder="Ketik nama addon (misal: Furniture, Animals)..." 
                            class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:outline-none focus:border-green-500 text-white transition">
                     <button onclick="performSearch()" class="px-8 py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition shadow-lg shadow-green-900/30">
                         Cari Mod
@@ -56,11 +78,11 @@ def index():
 
             <div id="loading" class="hidden text-center py-8">
                 <div class="animate-spin inline-block w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full mb-2"></div>
-                <p class="text-gray-400 text-sm">Mencari di database lokal...</p>
+                <p class="text-gray-400 text-sm">Mencari file di database...</p>
             </div>
 
             <div id="results-container" class="grid gap-4">
-                <p class="text-center text-gray-600 py-10">Masukkan kata kunci untuk memulai pencarian.</p>
+                <p class="text-center text-gray-600 py-10">Masukkan kata kunci di atas untuk menampilkan daftar mod.</p>
             </div>
         </div>
 
@@ -79,7 +101,7 @@ def index():
                 container.innerHTML = '';
 
                 try {
-                    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    const response = await fetch(`/api/search?q=\${encodeURIComponent(query)}`);
                     const data = await response.json();
                     loading.classList.add('hidden');
                     
@@ -95,7 +117,7 @@ def index():
                             <div>
                                 <h3 class="text-lg font-bold text-white">\${item.name}</h3>
                                 <div class="flex flex-wrap gap-2 mt-2">
-                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">\${item.type}</span>
+                                    <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">\plat\${item.type}</span>
                                     <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">\${item.uuid}</span>
                                 </div>
                             </div>
@@ -107,7 +129,7 @@ def index():
                     });
                 } catch (error) {
                     loading.classList.add('hidden');
-                    container.innerHTML = '<p class="text-center text-red-500">Gagal mengambil data dari server.</p>';
+                    container.innerHTML = '<p class="text-center text-red-500">Gagal memuat data dari server.</p>';
                 }
             }
 
@@ -131,11 +153,11 @@ def index():
                         button.innerText = "Sukses!";
                         button.className = "w-full sm:w-auto px-5 py-2.5 bg-green-600 text-white rounded-lg font-bold text-sm";
                     } else {
-                        alert("Gagal memproses: " + (data.error || "Token PlayFab expired"));
+                        alert("Gagal mengambil file: " + (data.error || "Token expired"));
                         resetButton();
                     }
                 } catch (error) {
-                    alert("Koneksi bermasalah.");
+                    alert("Terjadi kesalahan koneksi server.");
                     resetButton();
                 }
 
@@ -150,7 +172,7 @@ def index():
     </html>
     '''
 
-# 2. API PENCARIAN OFFLINE (Membaca langsung dari list.txt)
+# 2. API PENCARIAN (Membaca list.txt)
 @app.route('/api/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').lower()
@@ -161,24 +183,30 @@ def search():
     ]
     return jsonify(results)
 
-# 3. API RETRIEVE LINK PLAYFAB
+# 3. API PROSES DOWNLOAD DARI PLAYFAB DIRECT
 @app.route('/api/download/<uuid_code>', methods=['POST'])
 def download_addon(uuid_code):
+    global auth_token
     try:
-        # Panggil fungsi pencarian internal PlayFab langsung dari file PlayFab.py Anda
-        playfab_results = PlayFab.main([uuid_code])
+        # Jalankan fungsi login internal jika token kosong
+        if not auth_token:
+            if not login():
+                return jsonify({"error": "Gagal autentikasi PlayFab"}), 401
         
-        if not playfab_results or uuid_code not in playfab_results:
-            return jsonify({"error": "Item tidak ditemukan di PlayFab"}), 404
+        # Panggil fungsi search dari PlayFab bawaan skrip Anda
+        search_result = PlayFab.Search("", "creationDate DESC", "contents", 10, 0, [uuid_code])
+        search_results = search_result.get("Items", [])
+
+        if not search_results:
+            return jsonify({"error": "Item tidak ditemukan di katalog PlayFab"}), 404
             
-        item_data = playfab_results[uuid_code]
-        
+        item_data = search_results[0]
         download_url = None
         if "Contents" in item_data and len(item_data["Contents"]) > 0:
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "URL unduhan kosong"}), 404
+            return jsonify({"error": "Link unduhan tidak tersedia dari PlayFab"}), 404
 
         return jsonify({
             "success": True, 
