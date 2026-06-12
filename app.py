@@ -2,18 +2,18 @@ from flask import Flask, request, jsonify
 import re
 import os
 import PlayFab
-import tsv
-import dlc
+import coin  # Mengimpor file coin.py Anda untuk menggunakan fungsi login()
 
 app = Flask(__name__)
 
-# Fungsi membaca list.txt dari skrip asli Anda
+# Fungsi membaca list.txt (Database lokal Anda)
 def load_addons():
     addons = []
     if not os.path.exists('list.txt'):
         return addons
     
-    pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z]+)\s+([0-9a-fA-F-]{36})")
+    # Regex untuk memisahkan Nama, Tipe, dan UUID dari list.txt
+    pattern = re.compile(r"^(.*?)\s*-\s*([a-zA-Z\s\+]+)\s+([0-9a-fA-F-]{36})")
     with open('list.txt', 'r', encoding='utf-8') as f:
         for line in f:
             match = pattern.match(line.strip())
@@ -26,7 +26,7 @@ def load_addons():
                 })
     return addons
 
-# 1. TAMPILAN UTAMA (HTML dimasukkan ke sini agar Vercel bisa merendernya)
+# 1. ANTARMUKA WEBSITE (HTML + JAVASCRIPT)
 @app.route('/')
 def index():
     return '''
@@ -35,7 +35,7 @@ def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>MCPE Addon Downloader Dashboard</title>
+        <title>MCPE Addon Downloader</title>
         <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     </head>
     <body class="bg-gray-950 text-gray-100 min-h-screen font-sans">
@@ -47,7 +47,7 @@ def index():
 
             <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl mb-8">
                 <div class="flex flex-col sm:flex-row gap-3">
-                    <input type="text" id="search-input" placeholder="Ketik nama addon atau paste UUID di sini..." 
+                    <input type="text" id="search-input" placeholder="Ketik nama addon (misal: Furniture, Animals) atau paste UUID..." 
                            class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl focus:outline-none focus:border-green-500 text-white transition">
                     <button onclick="performSearch()" class="px-8 py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition shadow-lg shadow-green-900/30">
                         Cari Mod
@@ -57,7 +57,7 @@ def index():
 
             <div id="loading" class="hidden text-center py-8">
                 <div class="animate-spin inline-block w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full mb-2"></div>
-                <p class="text-gray-400 text-sm">Sedang mencari di database PlayFab...</p>
+                <p class="text-gray-400 text-sm">Mencari di database lokal...</p>
             </div>
 
             <div id="results-container" class="grid gap-4">
@@ -67,11 +67,11 @@ def index():
 
         <script>
             async function performSearch() {
-                const query = document.getElementById('search-input').value;
+                const query = document.getElementById('search-input').value.trim();
                 const container = document.getElementById('results-container');
                 const loading = document.getElementById('loading');
                 
-                if(!query.strip) {
+                if(!query) {
                     container.innerHTML = '<p class="text-center text-yellow-500">Kolom pencarian tidak boleh kosong!</p>';
                     return;
                 }
@@ -94,7 +94,7 @@ def index():
                         card.className = "bg-gray-900 p-5 rounded-xl border border-gray-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-gray-700 transition shadow-md";
                         card.innerHTML = `
                             <div>
-                                <h3 class="text-lg font-bold text-white font-sans">${item.name}</h3>
+                                <h3 class="text-lg font-bold text-white">${item.name}</h3>
                                 <div class="flex flex-wrap gap-2 mt-2">
                                     <span class="px-2.5 py-0.5 text-xs font-bold rounded-md bg-green-950 text-green-400 border border-green-900/50">${item.type}</span>
                                     <span class="text-xs text-gray-500 font-mono bg-gray-950 px-2 py-0.5 rounded border border-gray-800">${item.uuid}</span>
@@ -132,11 +132,11 @@ def index():
                         button.innerText = "Sukses!";
                         button.className = "w-full sm:w-auto px-5 py-2.5 bg-green-600 text-white rounded-lg font-bold text-sm";
                     } else {
-                        alert("Gagal memproses PlayFab: " + (data.error || "Mungkin token kedaluwarsa"));
+                        alert("Gagal memproses PlayFab: " + (data.error || "Token expired"));
                         resetButton();
                     }
                 } catch (error) {
-                    alert("Koneksi bermasalah.");
+                    alert("Koneksi bermasalah atau proses Vercel timeout.");
                     resetButton();
                 }
 
@@ -151,22 +151,30 @@ def index():
     </html>
     '''
 
-# 2. BACKEND API PENCARIAN
+# 2. API PENCARIAN OFFLINE (Membaca langsung dari list.txt)
 @app.route('/api/search', methods=['GET'])
 def search():
     query = request.args.get('q', '').lower()
     addons = load_addons()
+    
+    # Filter list berdasarkan nama atau uuid yang dicari user
     results = [
         a for a in addons 
         if query in a['name'].lower() or query in a['uuid'].lower()
     ]
     return jsonify(results)
 
-# 3. BACKEND API DOWNLOAD (Menjalankan fungsi PlayFab.py Anda di server awan Vercel)
+# 3. API RETRIEVE PLAYFAB (Berjalan saat tombol "Unduh Pack" diklik)
 @app.route('/api/download/<uuid_code>', methods=['POST'])
 def download_addon(uuid_code):
     try:
-        # Memanggil fungsi main([uuid]) dari PlayFab.py Anda
+        # Jalankan fungsi login bawaan dari skrip coin.py Anda di latar belakang Vercel
+        if hasattr(coin, 'login'):
+            login_success = coin.login()
+            if not login_success:
+                return jsonify({"error": "Gagal melakukan autentikasi ke server PlayFab"}), 401
+
+        # Ambil data item menggunakan fungsi PlayFab.py Anda
         playfab_results = PlayFab.main([uuid_code])
         
         if not playfab_results or uuid_code not in playfab_results:
@@ -179,7 +187,7 @@ def download_addon(uuid_code):
             download_url = item_data["Contents"][0].get("Url")
             
         if not download_url:
-            return jsonify({"error": "URL unduhan kosong / item tidak memiliki file"}), 404
+            return jsonify({"error": "URL unduhan kosong untuk item ini"}), 404
 
         return jsonify({
             "success": True, 
@@ -189,5 +197,4 @@ def download_addon(uuid_code):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Wajib untuk Vercel Serverless Gateway
 app = app
